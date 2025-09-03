@@ -3,6 +3,7 @@ from OpenGL.GLUT import *
 from OpenGL.GLU import *
 import math
 import random
+from collections import deque
 
 # ----------------- Maze Generation Classes -----------------
 class Cell:
@@ -20,11 +21,13 @@ class Maze:
     """
     A class to generate and hold the maze data.
     Uses a recursive backtracking algorithm.
+    Also computes ONE endpoint (goal) reachable from a chosen start cell.
     """
     def __init__(self, width, height):
         self.width = width
         self.height = height
         self.grid = [[Cell(x, y) for y in range(height)] for x in range(width)]
+        self.goal = None  # (gx, gy)
         self.generate()
 
     def get_cell(self, x, y):
@@ -34,7 +37,7 @@ class Maze:
         return None
 
     def get_neighbors(self, cell):
-        """Finds all unvisited neighbors of a cell."""
+        """Finds all unvisited neighbors of a cell (for generation)."""
         neighbors = []
         if cell.y > 0 and not self.grid[cell.x][cell.y - 1].visited:
             neighbors.append(self.grid[cell.x][cell.y - 1])
@@ -74,6 +77,37 @@ class Maze:
             else:
                 stack.pop()
 
+    # ---------- ONE endpoint computation (farthest from start) ----------
+    def compute_goal_from_start(self, sx, sy):
+        """Sets a single goal at the farthest cell from (sx,sy) using BFS over open walls."""
+        W, H = self.width, self.height
+        dist = [[-1] * H for _ in range(W)]
+        q = deque()
+        q.append((sx, sy))
+        dist[sx][sy] = 0
+        while q:
+            x, y = q.popleft()
+            c = self.grid[x][y]
+            # Follow open passages only
+            if not c.walls['N'] and y > 0 and dist[x][y-1] == -1:
+                dist[x][y-1] = dist[x][y] + 1; q.append((x, y-1))
+            if not c.walls['S'] and y < H-1 and dist[x][y+1] == -1:
+                dist[x][y+1] = dist[x][y] + 1; q.append((x, y+1))
+            if not c.walls['E'] and x < W-1 and dist[x+1][y] == -1:
+                dist[x+1][y] = dist[x][y] + 1; q.append((x+1, y))
+            if not c.walls['W'] and x > 0 and dist[x-1][y] == -1:
+                dist[x-1][y] = dist[x][y] + 1; q.append((x-1, y))
+        # Pick farthest reachable cell
+        gx = gy = 0
+        md = -1
+        for i in range(W):
+            for j in range(H):
+                if dist[i][j] > md:
+                    md = dist[i][j]
+                    gx, gy = i, j
+        self.goal = (gx, gy)
+        return gx, gy, md
+
 # ---------------- Window & Scene ----------------
 WINDOW_W, WINDOW_H = 1200, 900
 game_maze = None
@@ -100,6 +134,7 @@ FP_CAM_HEIGHT = 60.0
 
 # ---------------- Game State ----------------
 game_over = False
+start_cell_xy = (0, 0)
 
 # --------------- Utility & Collision -----------------
 def clamp(v, lo, hi):
@@ -109,35 +144,68 @@ def check_collision(x, y):
     """Checks if a point (x,y) is inside a wall."""
     grid_x = int(x / CELL_SIZE)
     grid_y = int(y / CELL_SIZE)
-    
+
     if not (0 <= grid_x < MAZE_WIDTH and 0 <= grid_y < MAZE_HEIGHT):
         return True # Out of bounds is a collision
 
     cell = game_maze.grid[grid_x][grid_y]
-    
+
     # Check against the four walls of the current cell
     x_in_cell = x % CELL_SIZE
     y_in_cell = y % CELL_SIZE
-    
-    buffer = PLAYER_RADIUS / 2 # Add a small buffer for collision
-    if cell.walls['N'] and y_in_cell < WALL_THICKNESS + buffer: return True
-    if cell.walls['S'] and y_in_cell > CELL_SIZE - (WALL_THICKNESS + buffer): return True
-    if cell.walls['W'] and x_in_cell < WALL_THICKNESS + buffer: return True
-    if cell.walls['E'] and x_in_cell > CELL_SIZE - (WALL_THICKNESS + buffer): return True
+
+    # THE FIX: The buffer is removed. We only check against the wall's thickness.
+    # A tiny buffer of 1.0 is kept just to prevent floating-point errors
+    # that could let the player slip through a wall.
+    buffer = 1.0 
+    if cell.walls['N'] and y_in_cell < WALL_THICKNESS - buffer: return True
+    if cell.walls['S'] and y_in_cell > CELL_SIZE - (WALL_THICKNESS - buffer): return True
+    if cell.walls['W'] and x_in_cell < WALL_THICKNESS - buffer: return True
+    if cell.walls['E'] and x_in_cell > CELL_SIZE - (WALL_THICKNESS - buffer): return True
 
     return False
 
+# ---------- Goal drawing (single endpoint visual) ----------
+def draw_goal():
+    if not game_maze or not game_maze.goal:
+        return
+    gx, gy = game_maze.goal
+    cx = gx * CELL_SIZE + CELL_SIZE / 2
+    cy = gy * CELL_SIZE + CELL_SIZE / 2
+
+    glPushMatrix()
+    glTranslatef(cx, cy, 0)
+    # Base pad
+    glColor3f(0.95, 0.85, 0.2)
+    glPushMatrix(); glTranslatef(0, 0, 6); glScalef(40, 40, 12); glutSolidCube(1); glPopMatrix()
+    # Left post
+    glColor3f(0.2, 0.8, 0.2)
+    glPushMatrix(); glTranslatef(-16, 0, 70); glScalef(12, 12, 140); glutSolidCube(1); glPopMatrix()
+    # Right post
+    glPushMatrix(); glTranslatef(16, 0, 70); glScalef(12, 12, 140); glutSolidCube(1); glPopMatrix()
+    # Header
+    glColor3f(0.2, 0.6, 0.9)
+    glPushMatrix(); glTranslatef(0, 0, 140); glScalef(44, 12, 12); glutSolidCube(1); glPopMatrix()
+    glPopMatrix()
+
+# ---------- Game reset ----------
 def reset_game():
-    """Resets the game state and generates a new maze."""
-    global game_maze, player_x, player_y, player_angle_deg
+    """Resets the game state and generates a new maze, with ONE endpoint set."""
+    global game_maze, player_x, player_y, player_angle_deg, start_cell_xy
     game_maze = Maze(MAZE_WIDTH, MAZE_HEIGHT)
-    # Place player in a random open cell
+
+    # Place player in a random cell (start)
     start_x = random.randint(0, MAZE_WIDTH - 1)
     start_y = random.randint(0, MAZE_HEIGHT - 1)
+    start_cell_xy = (start_x, start_y)
+
     player_x = start_x * CELL_SIZE + CELL_SIZE / 2
     player_y = start_y * CELL_SIZE + CELL_SIZE / 2
     player_angle_deg = 0.0
-    print("New maze generated. Player reset.")
+
+    # Compute ONE endpoint (goal) farthest from start
+    gx, gy, d = game_maze.compute_goal_from_start(start_x, start_y)
+    print(f"New maze generated. Start={start_cell_xy}, Goal={(gx, gy)}, PathLen={d} cells")
 
 # --------------- Drawing -----------------
 def draw_ground():
@@ -155,7 +223,7 @@ def draw_wall(x1, y1, x2, y2):
     random.seed(x1 * 100 + y1)
     green_shade = 0.3 + random.random() * 0.3 # Varies from 0.3 to 0.6
     glColor3f(0.1, green_shade, 0.1) # Shades of green
-    
+
     mid_x, mid_y = (x1 + x2) / 2, (y1 + y2) / 2
     length = math.hypot(x2 - x1, y2 - y1)
     glPushMatrix()
@@ -183,6 +251,7 @@ def draw_maze():
     for y in range(MAZE_HEIGHT):
         draw_wall(MAZE_WIDTH * CELL_SIZE, y * CELL_SIZE, MAZE_WIDTH * CELL_SIZE, (y + 1) * CELL_SIZE)
 
+
 def draw_player():
     if first_person: return
     glPushMatrix()
@@ -197,10 +266,11 @@ def draw_player():
     glPopMatrix()
 
 # --------------- Camera -----------------
+# --------------- Camera -----------------
 def setupCamera():
     glMatrixMode(GL_PROJECTION)
     glLoadIdentity()
-    gluPerspective(60.0, WINDOW_W / float(WINDOW_H), 1.0, 20000.0) # Increased far clipping plane for the ground
+    gluPerspective(60.0, WINDOW_W / float(WINDOW_H), 1.0, 20000.0)
     glMatrixMode(GL_MODELVIEW)
     glLoadIdentity()
     if first_person:
@@ -210,12 +280,34 @@ def setupCamera():
     else:
         # 3rd person camera logic
         angle_rad = math.radians(player_angle_deg)
-        # Position camera behind the player
-        cam_x = player_x - cam_radius * math.cos(angle_rad)
-        cam_y = player_y - cam_radius * math.sin(angle_rad)
-        # Look at a point slightly above the player's base
+        
+        # 1. Calculate the IDEAL camera position (behind the player)
+        ideal_cam_x = player_x - cam_radius * math.cos(angle_rad)
+        ideal_cam_y = player_y - cam_radius * math.sin(angle_rad)
+        
+        # 2. Start with the final position as the ideal one
+        final_cam_x = ideal_cam_x
+        final_cam_y = ideal_cam_y
+
+        # 3. Ray-march from player to the ideal camera position to check for walls
+        # We check a number of steps along the line to find any intersections.
+        num_steps = 20 
+        for i in range(1, num_steps + 1):
+            t = i / float(num_steps)
+            # Calculate the point to check on the line from player to camera
+            check_x = player_x * (1.0 - t) + ideal_cam_x * t
+            check_y = player_y * (1.0 - t) + ideal_cam_y * t
+
+            if check_collision(check_x, check_y):
+                # If a collision is found, pull the camera to the last safe spot
+                t_safe = (i - 1) / float(num_steps)
+                final_cam_x = player_x * (1.0 - t_safe) + ideal_cam_x * t_safe
+                final_cam_y = player_y * (1.0 - t_safe) + ideal_cam_y * t_safe
+                break # Stop checking, as we've found the nearest wall
+
+        # 4. Use the final, collision-adjusted position for the camera
         look_at_z = PLAYER_RADIUS + 20
-        gluLookAt(cam_x, cam_y, cam_height, player_x, player_y, look_at_z, 0, 0, 1)
+        gluLookAt(final_cam_x, final_cam_y, cam_height, player_x, player_y, look_at_z, 0, 0, 1)
 
 # --------------- Input -----------------
 def keyboardListener(key, x, y):
@@ -225,7 +317,7 @@ def keyboardListener(key, x, y):
         return
 
     angle_rad = math.radians(player_angle_deg)
-    
+
     # Tentative next position
     next_x, next_y = player_x, player_y
 
@@ -239,11 +331,11 @@ def keyboardListener(key, x, y):
         player_angle_deg += TURN_SPEED
     elif key == b'd':
         player_angle_deg -= TURN_SPEED
-    
+
     # Check collision for the four corners of a bounding box around the player
     collided = False
-    for angle in range(0, 360, 90):
-        check_rad = math.radians(angle)
+    for ang in range(0, 360, 90):
+        check_rad = math.radians(ang)
         check_x = next_x + PLAYER_RADIUS * math.cos(check_rad)
         check_y = next_y + PLAYER_RADIUS * math.sin(check_rad)
         if check_collision(check_x, check_y):
@@ -273,23 +365,41 @@ def mouseListener(button, state, x, y):
         first_person = not first_person
 
 # --------------- Main Loop -----------------
+
+# Simple sanity tests to ensure there is EXACTLY ONE goal and it is reachable
+
+def run_sanity_tests():
+    print("[Tests] Sanity: generating maze and computing one endpoint...")
+    m = Maze(MAZE_WIDTH, MAZE_HEIGHT)
+    sx, sy = 0, 0
+    gx, gy, d = m.compute_goal_from_start(sx, sy)
+    assert m.goal is not None, "[FAIL] Goal not set"
+    assert d >= 0, "[FAIL] Goal unreachable from start"
+    print(f"[PASS] One endpoint at {(gx, gy)} reachable from start {(sx, sy)}, distance {d} cells.")
+
+
 def showScreen():
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
     setupCamera()
     draw_ground()
     draw_maze()
+    draw_goal()
     draw_player()
     glutSwapBuffers()
 
+
 def main():
+    run_sanity_tests()
+
     glutInit()
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH)
     glutInitWindowSize(WINDOW_W, WINDOW_H)
     glutInitWindowPosition(50, 50)
+    # Using ASCII-only bytes literal for Windows/PyOpenGL strict wrappers
     glutCreateWindow(b"The Final Door")
-    
+
     glClearColor(0.5, 0.7, 1.0, 1.0) # Set sky blue background
-    
+
     reset_game()
     glutDisplayFunc(showScreen)
     glutIdleFunc(showScreen)
@@ -301,4 +411,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
