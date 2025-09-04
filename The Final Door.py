@@ -399,7 +399,6 @@ def keyboardListener(key, x, y):
     elif key == b'd': player_angle_deg -= TURN_SPEED
     collided = any(check_collision(next_x + PLAYER_RADIUS*math.cos(math.radians(a)), next_y + PLAYER_RADIUS*math.sin(math.radians(a))) for a in range(0, 360, 90))
     if not collided: player_x, player_y = next_x, next_y
-#test
 
 def specialKeyListener(key, x, y):
     global cam_height, cam_radius
@@ -427,7 +426,7 @@ def mouseListener(button, state, x, y):
                 elif btn_y - 70 < gl_y < btn_y - 70 + btn_h:
                     game_state = "level_select"
                 elif btn_y - 140 < gl_y < btn_y - 140 + btn_h:
-                    sys.exit()
+                    glutLeaveMainLoop()
         elif game_state == "level_select":
             btn_y = WINDOW_H / 2 + 50
             if WINDOW_W/2-150 < x < WINDOW_W/2+150:
@@ -441,7 +440,7 @@ def mouseListener(button, state, x, y):
                 if current_level < 3 and btn_y < gl_y < btn_y+50: start_game(current_level + 1)
                 elif current_level == 3 and btn_y < gl_y < btn_y+50: start_game(1)
                 if btn_y-70 < gl_y < btn_y-20: start_game(1)
-                if btn_y-140 < gl_y < btn_y-90: sys.exit()
+                if btn_y-140 < gl_y < btn_y-90: glutLeaveMainLoop()
 
 def check_win_condition():
     global game_state
