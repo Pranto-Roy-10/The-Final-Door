@@ -399,6 +399,7 @@ def keyboardListener(key, x, y):
     elif key == b'd': player_angle_deg -= TURN_SPEED
     collided = any(check_collision(next_x + PLAYER_RADIUS*math.cos(math.radians(a)), next_y + PLAYER_RADIUS*math.sin(math.radians(a))) for a in range(0, 360, 90))
     if not collided: player_x, player_y = next_x, next_y
+#test
 
 def specialKeyListener(key, x, y):
     global cam_height, cam_radius
