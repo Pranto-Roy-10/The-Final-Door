@@ -14,9 +14,9 @@ class Cell:
         self.walls = {'N': True, 'S': True, 'E': True, 'W': True}
         self.visited = False
         self.wall_colors = {}
-        # Trap attributes
         self.has_spikes = False
         self.has_hole = False
+        self.spike_rotations = []
 
 class Maze:
     def __init__(self, width, height):
@@ -26,7 +26,7 @@ class Maze:
         self.goal = None
         self.start_x = -1
         self.start_y = -1
-        self.main_path = set() # For intelligent trap placement
+        self.main_path = set()
         for x in range(width):
             for y in range(height):
                 cell = self.grid[x][y]
@@ -129,11 +129,14 @@ class Maze:
                 if placed_count >= num_to_place: break
                 if (cell.x, cell.y) in placed_trap_locations: continue
                 
-                if is_hole: cell.has_hole = True
-                else: cell.has_spikes = True
+                if is_hole:
+                    cell.has_hole = True
+                else:
+                    cell.has_spikes = True
+                    num_small_spikes = 4
+                    cell.spike_rotations = [random.uniform(0, 360) for _ in range(num_small_spikes)]
                 
                 placed_trap_locations.add((cell.x, cell.y))
-                # Block adjacent cells to prevent clustering
                 for dx, dy in [(0,1), (0,-1), (1,0), (-1,0)]:
                     nx, ny = cell.x + dx, cell.y + dy
                     if 0 <= nx < self.width and 0 <= ny < self.height:
@@ -150,10 +153,10 @@ class Bullet:
         self.y = y
         self.z = 33
         self.angle = angle
-        self.speed = 4
+        self.speed = 0.5
         self.active = True
         self.is_enemy = is_enemy
-        self.radius = 3
+        self.radius = 1
 
     def update(self):
         if self.active:
@@ -243,7 +246,7 @@ class Enemy:
             self.shoot_cooldown -= 1
             if self.shoot_cooldown <= 0:
                 self.fire()
-                self.shoot_cooldown = random.randint(100, 180)
+                self.shoot_cooldown = random.randint(150, 250)
         else:
             target_x, target_y = self.target_pos
             dist_to_target = math.hypot(target_x - self.x, target_y - self.y)
@@ -331,8 +334,8 @@ LEVEL_SETTINGS = {
 }
 
 # --------------- Utility & Collision -----------------
-HOLE_RADIUS = CELL_SIZE / 5
-SPIKE_RADIUS = CELL_SIZE / 5
+HOLE_RADIUS = CELL_SIZE / 3.5
+SPIKE_RADIUS = CELL_SIZE / 3.0
 
 def clamp(v, lo, hi):
     return max(lo, min(hi, v))
@@ -348,6 +351,19 @@ def check_collision(x, y):
     cell = game_maze.grid[grid_x][grid_y]
     x_in_cell, y_in_cell = x % CELL_SIZE, y % CELL_SIZE
     buffer = PLAYER_RADIUS 
+    if cell.walls['N'] and y_in_cell < WALL_THICKNESS + buffer: return True
+    if cell.walls['S'] and y_in_cell > CELL_SIZE - (WALL_THICKNESS + buffer): return True
+    if cell.walls['W'] and x_in_cell < WALL_THICKNESS + buffer: return True
+    if cell.walls['E'] and x_in_cell > CELL_SIZE - (WALL_THICKNESS + buffer): return True
+    return False
+
+# NEW: Dedicated collision check for the camera with a smaller buffer
+def check_camera_collision(x, y):
+    grid_x, grid_y = int(x / CELL_SIZE), int(y / CELL_SIZE)
+    if not (0 <= grid_x < MAZE_WIDTH and 0 <= grid_y < MAZE_HEIGHT): return True
+    cell = game_maze.grid[grid_x][grid_y]
+    x_in_cell, y_in_cell = x % CELL_SIZE, y % CELL_SIZE
+    buffer = 5.0 # A small, fixed buffer for the camera
     if cell.walls['N'] and y_in_cell < WALL_THICKNESS + buffer: return True
     if cell.walls['S'] and y_in_cell > CELL_SIZE - (WALL_THICKNESS + buffer): return True
     if cell.walls['W'] and x_in_cell < WALL_THICKNESS + buffer: return True
@@ -481,6 +497,18 @@ def update_lighting(level):
         glDisable(GL_LIGHTING)
 
 # --------------- Drawing (Scene) -----------------
+def draw_pyramid():
+    base = 10
+    height = 40
+    glBegin(GL_TRIANGLE_FAN)
+    glVertex3f(0, 0, height)
+    glVertex3f(-base, -base, 0)
+    glVertex3f(base, -base, 0)
+    glVertex3f(base, base, 0)
+    glVertex3f(-base, base, 0)
+    glVertex3f(-base, -base, 0)
+    glEnd()
+
 def draw_3d_scene():
     draw_ground()
     if game_maze:
@@ -527,7 +555,6 @@ def draw_traps():
             cx, cy = x*CELL_SIZE + CELL_SIZE/2, y*CELL_SIZE + CELL_SIZE/2
             
             if cell.has_hole:
-                #The ground is at z=-0.1, so this places the hole on top.
                 glPushMatrix(); glColor3f(0.1, 0.1, 0.1); glTranslatef(cx, cy, 0.1)
                 glBegin(GL_TRIANGLE_FAN)
                 glVertex3f(0, 0, 0)
@@ -537,12 +564,24 @@ def draw_traps():
                 glEnd(); glPopMatrix()
 
             if cell.has_spikes:
-                glPushMatrix(); glColor3f(0.5, 0.5, 0.55); glTranslatef(cx, cy, 0)
-                spike_positions = [(0,0), (15,15), (-15,15), (15,-15), (-15,-15), (25,0), (-25,0), (0,25), (0,-25)]
-                for sx, sy in spike_positions:
-                    if math.hypot(sx, sy) < SPIKE_RADIUS:
-                        glPushMatrix(); glTranslatef(sx, sy, 0); glRotatef(-90, 1, 0, 0)
-                        glutSolidCone(6, 30, 8, 8); glPopMatrix()
+                glPushMatrix()
+                glTranslatef(cx, cy, 0)
+                
+                glPushMatrix()
+                glColor3f(0.6, 0.6, 0.7)
+                glScalef(1.1, 1.1, 1.3)
+                draw_pyramid()
+                glPopMatrix()
+
+                glColor3f(0.5, 0.5, 0.55)
+                small_spike_positions = [(25, 20), (-25, 25), (15, -25), (-20, -15)]
+                if len(cell.spike_rotations) == len(small_spike_positions):
+                    for i, (sx, sy) in enumerate(small_spike_positions):
+                        glPushMatrix()
+                        glTranslatef(sx, sy, 0)
+                        glRotatef(cell.spike_rotations[i], 0, 0, 1)
+                        draw_pyramid()
+                        glPopMatrix()
                 glPopMatrix()
 
 def draw_player():
@@ -659,15 +698,28 @@ def setup_player_camera():
         gluLookAt(player_x, player_y, FP_CAM_HEIGHT, look_x, look_y, FP_CAM_HEIGHT, 0, 0, 1)
     else:
         angle_rad = math.radians(player_angle_deg)
-        ideal_cam_x, ideal_cam_y = player_x - cam_radius*math.cos(angle_rad), player_y - cam_radius*math.sin(angle_rad)
+        ideal_cam_x = player_x - cam_radius * math.cos(angle_rad)
+        ideal_cam_y = player_y - cam_radius * math.sin(angle_rad)
         target_cam_x, target_cam_y = ideal_cam_x, ideal_cam_y
+
+        # UPDATED: Improved camera collision logic
         for i in range(1, 21):
             t = i / 20.0
-            check_x, check_y = player_x*(1-t) + ideal_cam_x*t, player_y*(1-t) + ideal_cam_y*t
-            if check_collision(check_x, check_y):
+            check_x = player_x * (1 - t) + ideal_cam_x * t
+            check_y = player_y * (1 - t) + ideal_cam_y * t
+            
+            if check_camera_collision(check_x, check_y):
                 t_safe = (i - 1) / 20.0
-                target_cam_x, target_cam_y = player_x*(1-t_safe) + ideal_cam_x*t_safe, player_y*(1-t_safe) + ideal_cam_y*t_safe
+                
+                # Enforce a minimum distance from the player to prevent clipping into the model
+                min_dist_factor = 0.2
+                if t_safe < min_dist_factor:
+                    t_safe = min_dist_factor
+
+                target_cam_x = player_x * (1 - t_safe) + ideal_cam_x * t_safe
+                target_cam_y = player_y * (1 - t_safe) + ideal_cam_y * t_safe
                 break
+
         current_cam_x += (target_cam_x - current_cam_x) * CAMERA_SMOOTH_FACTOR
         current_cam_y += (target_cam_y - current_cam_y) * CAMERA_SMOOTH_FACTOR
         current_cam_h += (cam_height - current_cam_h) * CAMERA_SMOOTH_FACTOR
