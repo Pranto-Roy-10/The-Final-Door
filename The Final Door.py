@@ -186,7 +186,7 @@ class Bullet:
         self.y = y
         self.z = 33
         self.angle = angle
-        self.speed = 0.5
+        self.speed = 5.0 # Increased bullet speed
         self.active = True
         self.is_enemy = is_enemy
         self.radius = 1.0
@@ -221,11 +221,10 @@ class Enemy:
         self.x = x
         self.y = y
         self.angle_deg = random.randint(0, 359)
-        # --- MODIFICATION 1: Increased enemy radius for a more generous hitbox ---
-        self.radius = 22.0
+        self.radius = 22.0 # Increased enemy radius for a more generous hitbox
         self.shoot_cooldown = random.randint(60, 120)
         self.active = True
-        self.ammo = 3
+        self.ammo = 10 # Increased enemy ammo
         self.speed = 0.07
         self.patrol_start = (x, y)
         self.patrol_end = self.find_patrol_end()
@@ -282,7 +281,7 @@ class Enemy:
             self.shoot_cooldown -= 1
             if self.shoot_cooldown <= 0:
                 self.fire()
-                self.shoot_cooldown = random.randint(150, 250)
+                self.shoot_cooldown = random.randint(60, 120) # Faster firing rate
         else:
             target_x, target_y = self.target_pos
             dist_to_target = math.hypot(target_x - self.x, target_y - self.y)
@@ -341,6 +340,10 @@ PLAYER_SPEED = 9.0
 TURN_SPEED = 4.0
 PLAYER_RADIUS = 9.0
 player_z = PLAYER_RADIUS
+max_health = 150
+player_health = max_health
+killed_enemies = 0
+spike_cooldown = 0
 
 # ---------------- Game Object Globals ----------------
 bullets = []
@@ -419,7 +422,7 @@ def get_random_position():
             return px, py
 
 def check_traps():
-    global game_state, game_over_message
+    global game_state, game_over_message, player_health, spike_cooldown
     if cheat_mode_active:
         return
         
@@ -431,10 +434,15 @@ def check_traps():
     dist_from_center = math.hypot(player_x - cx, player_y - cy)
 
     if cell.has_hole and dist_from_center < HOLE_RADIUS - PLAYER_RADIUS:
+        player_health = 0
         game_over_message, game_state = "You fell into a hole!", "game_over"
     
-    if cell.has_spikes and dist_from_center < SPIKE_RADIUS - PLAYER_RADIUS:
-        game_over_message, game_state = "You ran into the spikes!", "game_over"
+    if cell.has_spikes and dist_from_center < SPIKE_RADIUS - PLAYER_RADIUS and spike_cooldown <= 0:
+        player_health -= 15
+        player_health = max(0, player_health)
+        spike_cooldown = 30
+        if player_health == 0:
+            game_over_message, game_state = "You ran into the spikes!", "game_over"
 
 # ---------- Game Logic ----------
 def fire_bullet():
@@ -460,10 +468,13 @@ def update_cheat_mode():
         last_player_grid_pos = current_grid_pos
 
 def update_game_logic():
-    global bullets, enemies, game_state, game_over_message
+    global bullets, enemies, game_state, game_over_message, killed_enemies, player_health, spike_cooldown
 
     if cheat_mode_active:
         update_cheat_mode()
+
+    if spike_cooldown > 0:
+        spike_cooldown -= 1
 
     for bullet in bullets: bullet.update()
     bullets[:] = [b for b in bullets if b.active]
@@ -474,20 +485,24 @@ def update_game_logic():
         if not bullet.active: continue
         if not bullet.is_enemy:
             for enemy in enemies:
-                # --- MODIFICATION 2: Changed to proper circle-circle collision ---
                 if enemy.active and math.hypot(bullet.x - enemy.x, bullet.y - enemy.y) < enemy.radius + bullet.radius:
                     enemy.active = False
                     bullet.active = False
+                    killed_enemies += 1
                     break
         else:
-            if not cheat_mode_active and math.hypot(bullet.x - player_x, bullet.y - player_y) < PLAYER_RADIUS:
-                game_over_message, game_state = "You were shot by an enemy!", "game_over"
+            if not cheat_mode_active and math.hypot(bullet.x - player_x, bullet.y - player_y) < PLAYER_RADIUS + bullet.radius:
+                player_health -= 10
+                player_health = max(0, player_health)
                 bullet.active = False
-                return
+                if player_health <= 0:
+                    game_over_message, game_state = "You were shot by an enemy!", "game_over"
+                    return
 
     for enemy in enemies:
         if not cheat_mode_active and enemy.active and math.hypot(player_x - enemy.x, player_y - enemy.y) < PLAYER_RADIUS + enemy.radius:
             game_over_message, game_state = "You ran into an enemy!", "game_over"
+            player_health = 0
             return
 
     check_traps()
@@ -502,6 +517,7 @@ def start_game(level=1):
     global game_maze, player_x, player_y, player_angle_deg, game_state, player_z
     global MAZE_WIDTH, MAZE_HEIGHT, current_level, bullets, enemies, enemies_to_spawn_count
     global current_cam_x, current_cam_y, current_cam_h, current_look_at_x, current_look_at_y
+    global player_health, killed_enemies, spike_cooldown
 
     current_level = level
     level_settings = LEVEL_SETTINGS[current_level]
@@ -529,6 +545,9 @@ def start_game(level=1):
     current_cam_x, current_cam_y, current_cam_h = player_x, player_y, cam_height
     current_look_at_x, current_look_at_y = player_x, player_y
     game_state = "playing"
+    player_health = max_health
+    killed_enemies = 0
+    spike_cooldown = 0
     
     print(f"--- Starting {level_settings['name']} ---")
     print(f"Total enemies for level: {level_settings['total_enemies']}")
@@ -763,6 +782,61 @@ def draw_game_over_menu():
         draw_styled_button(WINDOW_W/2-100, btn_y-140, 200, 50, "Quit Game")
     draw_ui_overlay(content)
 
+def draw_hud():
+    glMatrixMode(GL_PROJECTION)
+    glPushMatrix()
+    glLoadIdentity()
+    gluOrtho2D(0, WINDOW_W, 0, WINDOW_H)
+    glMatrixMode(GL_MODELVIEW)
+    glPushMatrix()
+    glLoadIdentity()
+    glDisable(GL_DEPTH_TEST)
+
+    # Health text
+    glColor3f(1, 1, 1)
+    draw_text(20, WINDOW_H - 30, "Health:")
+
+    # Health bar
+    bar_x = 100
+    bar_y = WINDOW_H - 35
+    bar_w = 200
+    bar_h = 20
+
+    # Outline
+    glColor3f(1, 1, 1)
+    glBegin(GL_LINE_LOOP)
+    glVertex2f(bar_x, bar_y)
+    glVertex2f(bar_x + bar_w, bar_y)
+    glVertex2f(bar_x + bar_w, bar_y + bar_h)
+    glVertex2f(bar_x, bar_y + bar_h)
+    glEnd()
+
+    # Fill
+    if player_health > 0:
+        fill_w = (player_health / max_health) * bar_w
+        if player_health > (max_health * 0.66):
+            glColor3f(0, 1, 0)  # green
+        elif player_health > (max_health * 0.33):
+            glColor3f(1, 1, 0)  # yellow
+        else:
+            glColor3f(1, 0, 0)  # red
+        glBegin(GL_QUADS)
+        glVertex2f(bar_x, bar_y)
+        glVertex2f(bar_x + fill_w, bar_y)
+        glVertex2f(bar_x + fill_w, bar_y + bar_h)
+        glVertex2f(bar_x, bar_y + bar_h)
+        glEnd()
+
+    # Enemies killed
+    glColor3f(1, 1, 1)
+    draw_text(20, WINDOW_H - 60, f"Enemies Killed: {killed_enemies}")
+
+    glEnable(GL_DEPTH_TEST)
+    glMatrixMode(GL_PROJECTION)
+    glPopMatrix()
+    glMatrixMode(GL_MODELVIEW)
+    glPopMatrix()
+
 # --------------- Camera -----------------
 def setup_player_camera():
     global current_cam_x, current_cam_y, current_cam_h, current_look_at_x, current_look_at_y
@@ -899,6 +973,8 @@ def check_win_condition():
     goal_pos_x, goal_pos_y = gx*CELL_SIZE + CELL_SIZE/2, gy*CELL_SIZE + CELL_SIZE/2
     distance = math.hypot(player_x - goal_pos_x, player_y - goal_pos_y)
     
+    all_enemies_defeated = enemies_to_spawn_count == 0 and all(not enemy.active for enemy in enemies)
+    
     if distance < PLAYER_RADIUS + 20:
         game_state = "level_complete"
         print("Level Complete!")
@@ -926,6 +1002,9 @@ def showScreen():
         setup_demo_camera(); draw_3d_scene()
         if game_state == "intro_menu": draw_intro_menu()
         elif game_state == "level_select": draw_level_select_menu()
+
+    if game_state in ["playing", "level_complete", "game_over"]:
+        draw_hud()
             
     glutSwapBuffers()
 
