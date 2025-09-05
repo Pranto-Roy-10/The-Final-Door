@@ -109,6 +109,39 @@ class Maze:
         
         return gx, gy, md
 
+    def find_shortest_path(self, start_pos, end_pos):
+        sx, sy = start_pos
+        ex, ey = end_pos
+        
+        q = deque([(sx, sy)])
+        parent = {(sx, sy): None}
+        visited = {(sx, sy)}
+
+        while q:
+            x, y = q.popleft()
+            if (x, y) == (ex, ey):
+                path = []
+                curr = (ex, ey)
+                while curr is not None:
+                    path.append(curr)
+                    curr = parent.get(curr)
+                return path[::-1]
+
+            c = self.grid[x][y]
+            
+            potential_neighbors = []
+            if not c.walls['N'] and y > 0: potential_neighbors.append((x, y - 1))
+            if not c.walls['S'] and y < self.height - 1: potential_neighbors.append((x, y + 1))
+            if not c.walls['E'] and x < self.width - 1: potential_neighbors.append((x + 1, y))
+            if not c.walls['W'] and x > 0: potential_neighbors.append((x - 1, y))
+            
+            for nx, ny in potential_neighbors:
+                if (nx, ny) not in visited:
+                    visited.add((nx, ny))
+                    parent[(nx, ny)] = (x, y)
+                    q.append((nx, ny))
+        return []
+
     def place_traps(self, start_x, start_y):
         level_settings = LEVEL_SETTINGS[current_level]
         num_holes = level_settings['hole_traps']
@@ -156,7 +189,7 @@ class Bullet:
         self.speed = 0.5
         self.active = True
         self.is_enemy = is_enemy
-        self.radius = 1
+        self.radius = 1.0
 
     def update(self):
         if self.active:
@@ -181,12 +214,15 @@ class Bullet:
             glPopMatrix()
 
 # ----------------- Enemy Class -----------------
+ENEMY_SIGHT_RANGE = 450.0
+
 class Enemy:
     def __init__(self, x, y):
         self.x = x
         self.y = y
         self.angle_deg = random.randint(0, 359)
-        self.radius = PLAYER_RADIUS * 1.5
+        # --- MODIFICATION 1: Increased enemy radius for a more generous hitbox ---
+        self.radius = 22.0
         self.shoot_cooldown = random.randint(60, 120)
         self.active = True
         self.ammo = 3
@@ -225,7 +261,7 @@ class Enemy:
 
     def can_see_player(self):
         dist = math.hypot(player_x - self.x, player_y - self.y)
-        if dist > 450: return False
+        if dist > ENEMY_SIGHT_RANGE: return False
         
         dx, dy = player_x - self.x, player_y - self.y
         steps = int(dist / 20)
@@ -333,6 +369,11 @@ LEVEL_SETTINGS = {
     3: {'size': (15, 15), 'name': 'The Midnight Maze',      'sky_color': (0.05, 0.05, 0.2, 1.0), 'total_enemies': 30, 'hole_traps': 8, 'spike_traps': 12}
 }
 
+# --------------- Cheat Mode Globals -----------------
+cheat_mode_active = False
+cheat_path = []
+last_player_grid_pos = (-1, -1)
+
 # --------------- Utility & Collision -----------------
 HOLE_RADIUS = CELL_SIZE / 3.5
 SPIKE_RADIUS = CELL_SIZE / 3.0
@@ -357,13 +398,12 @@ def check_collision(x, y):
     if cell.walls['E'] and x_in_cell > CELL_SIZE - (WALL_THICKNESS + buffer): return True
     return False
 
-# NEW: Dedicated collision check for the camera with a smaller buffer
 def check_camera_collision(x, y):
     grid_x, grid_y = int(x / CELL_SIZE), int(y / CELL_SIZE)
     if not (0 <= grid_x < MAZE_WIDTH and 0 <= grid_y < MAZE_HEIGHT): return True
     cell = game_maze.grid[grid_x][grid_y]
     x_in_cell, y_in_cell = x % CELL_SIZE, y % CELL_SIZE
-    buffer = 5.0 # A small, fixed buffer for the camera
+    buffer = 5.0
     if cell.walls['N'] and y_in_cell < WALL_THICKNESS + buffer: return True
     if cell.walls['S'] and y_in_cell > CELL_SIZE - (WALL_THICKNESS + buffer): return True
     if cell.walls['W'] and x_in_cell < WALL_THICKNESS + buffer: return True
@@ -380,6 +420,9 @@ def get_random_position():
 
 def check_traps():
     global game_state, game_over_message
+    if cheat_mode_active:
+        return
+        
     grid_x, grid_y = int(player_x / CELL_SIZE), int(player_y / CELL_SIZE)
     if not (0 <= grid_x < MAZE_WIDTH and 0 <= grid_y < MAZE_HEIGHT): return
     cell = game_maze.grid[grid_x][grid_y]
@@ -408,8 +451,19 @@ def spawn_enemy():
     enemies.append(Enemy(ex, ey))
     enemies_to_spawn_count -= 1
 
+def update_cheat_mode():
+    global last_player_grid_pos, cheat_path
+    current_grid_pos = (int(player_x / CELL_SIZE), int(player_y / CELL_SIZE))
+    if current_grid_pos != last_player_grid_pos:
+        if game_maze and game_maze.goal:
+            cheat_path = game_maze.find_shortest_path(current_grid_pos, game_maze.goal)
+        last_player_grid_pos = current_grid_pos
+
 def update_game_logic():
     global bullets, enemies, game_state, game_over_message
+
+    if cheat_mode_active:
+        update_cheat_mode()
 
     for bullet in bullets: bullet.update()
     bullets[:] = [b for b in bullets if b.active]
@@ -420,18 +474,19 @@ def update_game_logic():
         if not bullet.active: continue
         if not bullet.is_enemy:
             for enemy in enemies:
-                if enemy.active and math.hypot(bullet.x - enemy.x, bullet.y - enemy.y) < enemy.radius:
+                # --- MODIFICATION 2: Changed to proper circle-circle collision ---
+                if enemy.active and math.hypot(bullet.x - enemy.x, bullet.y - enemy.y) < enemy.radius + bullet.radius:
                     enemy.active = False
                     bullet.active = False
                     break
         else:
-            if math.hypot(bullet.x - player_x, bullet.y - player_y) < PLAYER_RADIUS:
+            if not cheat_mode_active and math.hypot(bullet.x - player_x, bullet.y - player_y) < PLAYER_RADIUS:
                 game_over_message, game_state = "You were shot by an enemy!", "game_over"
                 bullet.active = False
                 return
 
     for enemy in enemies:
-        if enemy.active and math.hypot(player_x - enemy.x, player_y - enemy.y) < PLAYER_RADIUS + enemy.radius:
+        if not cheat_mode_active and enemy.active and math.hypot(player_x - enemy.x, player_y - enemy.y) < PLAYER_RADIUS + enemy.radius:
             game_over_message, game_state = "You ran into an enemy!", "game_over"
             return
 
@@ -509,11 +564,30 @@ def draw_pyramid():
     glVertex3f(-base, -base, 0)
     glEnd()
 
+def draw_cheat_path():
+    if not cheat_path: return
+    
+    was_lit = glIsEnabled(GL_LIGHTING)
+    if was_lit: glDisable(GL_LIGHTING)
+    
+    glColor3f(0.0, 1.0, 1.0) 
+    glLineWidth(5.0)
+    
+    glBegin(GL_LINE_STRIP)
+    for (gx, gy) in cheat_path:
+        glVertex3f(gx * CELL_SIZE + CELL_SIZE/2, gy * CELL_SIZE + CELL_SIZE/2, 2.0)
+    glEnd()
+    
+    glLineWidth(1.0) 
+    if was_lit: glEnable(GL_LIGHTING)
+
 def draw_3d_scene():
     draw_ground()
     if game_maze:
         draw_maze()
         if game_state in ["playing", "level_complete", "game_over"]:
+            if cheat_mode_active:
+                draw_cheat_path()
             draw_goal(); draw_player(); draw_traps()
             for enemy in enemies: enemy.draw()
             for bullet in bullets: bullet.draw()
@@ -702,7 +776,6 @@ def setup_player_camera():
         ideal_cam_y = player_y - cam_radius * math.sin(angle_rad)
         target_cam_x, target_cam_y = ideal_cam_x, ideal_cam_y
 
-        # UPDATED: Improved camera collision logic
         for i in range(1, 21):
             t = i / 20.0
             check_x = player_x * (1 - t) + ideal_cam_x * t
@@ -711,7 +784,6 @@ def setup_player_camera():
             if check_camera_collision(check_x, check_y):
                 t_safe = (i - 1) / 20.0
                 
-                # Enforce a minimum distance from the player to prevent clipping into the model
                 min_dist_factor = 0.2
                 if t_safe < min_dist_factor:
                     t_safe = min_dist_factor
@@ -736,18 +808,43 @@ def setup_demo_camera():
 
 # --------------- Input & Game Logic -----------------
 def keyboardListener(key, x, y):
-    global player_x, player_y, player_angle_deg
-    if key == b'r': start_game(current_level); return
-    if game_state != "playing": return
+    global player_x, player_y, player_angle_deg, cheat_mode_active, last_player_grid_pos
+
+    if key == b'c':
+        cheat_mode_active = not cheat_mode_active
+        if cheat_mode_active:
+            print("CHEAT MODE: ACTIVATED (Infinite Health, Path Guidance)")
+            last_player_grid_pos = (-1, -1) 
+            update_cheat_mode()
+        else:
+            print("CHEAT MODE: DEACTIVATED")
+            cheat_path.clear()
+        return
+
+    if key == b'r': 
+        start_game(current_level)
+        return
+    
+    if game_state != "playing": 
+        return
 
     angle_rad = math.radians(player_angle_deg)
     next_x, next_y = player_x, player_y
-    if key == b'w': next_x += math.cos(angle_rad)*PLAYER_SPEED; next_y += math.sin(angle_rad)*PLAYER_SPEED
-    elif key == b's': next_x -= math.cos(angle_rad)*PLAYER_SPEED; next_y -= math.sin(angle_rad)*PLAYER_SPEED
-    elif key == b'a': player_angle_deg += TURN_SPEED
-    elif key == b'd': player_angle_deg -= TURN_SPEED
+
+    if key == b'w': 
+        next_x += math.cos(angle_rad) * PLAYER_SPEED
+        next_y += math.sin(angle_rad) * PLAYER_SPEED
+    elif key == b's': 
+        next_x -= math.cos(angle_rad) * PLAYER_SPEED
+        next_y -= math.sin(angle_rad) * PLAYER_SPEED
     
-    if not check_collision(next_x, next_y): player_x, player_y = next_x, next_y
+    if key == b'a': 
+        player_angle_deg += TURN_SPEED
+    elif key == b'd': 
+        player_angle_deg -= TURN_SPEED
+    
+    if not check_collision(next_x, next_y): 
+        player_x, player_y = next_x, next_y
 
 def specialKeyListener(key, x, y):
     global cam_height, cam_radius
@@ -760,8 +857,12 @@ def specialKeyListener(key, x, y):
 def mouseListener(button, state, x, y):
     global first_person, game_state
     
-    if button == GLUT_LEFT_BUTTON and state == GLUT_DOWN and game_state == "playing": fire_bullet(); return
-    if button == GLUT_RIGHT_BUTTON and state == GLUT_DOWN and game_state == "playing": first_person = not first_person; return
+    if button == GLUT_LEFT_BUTTON and state == GLUT_DOWN and game_state == "playing": 
+        fire_bullet()
+        return
+    if button == GLUT_RIGHT_BUTTON and state == GLUT_DOWN and game_state == "playing": 
+        first_person = not first_person
+        return
     
     if button == GLUT_LEFT_BUTTON and state == GLUT_DOWN:
         gl_y = WINDOW_H - y
@@ -798,9 +899,7 @@ def check_win_condition():
     goal_pos_x, goal_pos_y = gx*CELL_SIZE + CELL_SIZE/2, gy*CELL_SIZE + CELL_SIZE/2
     distance = math.hypot(player_x - goal_pos_x, player_y - goal_pos_y)
     
-    all_enemies_defeated = enemies_to_spawn_count == 0 and all(not enemy.active for enemy in enemies)
-    
-    if distance < PLAYER_RADIUS + 20 and all_enemies_defeated:
+    if distance < PLAYER_RADIUS + 20:
         game_state = "level_complete"
         print("Level Complete!")
 
