@@ -355,7 +355,7 @@ class Enemy:
                 if self.target_pos == self.patrol_end:
                     self.target_pos = self.patrol_start 
                 else:
-                    self.patrol_end
+                    self.target_pos = self.patrol_end
             else:
                 # Move toward target
                 dx, dy = target_x - self.x, target_y - self.y
