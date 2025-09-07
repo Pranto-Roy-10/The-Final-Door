@@ -1251,9 +1251,9 @@ def keyboardListener(key, x, y):
             cheat_path.clear()                                              # Clear guidance
         return
 
-    if key == b'r':
-        start_game(current_level)                                           # Restart level
-        return
+    # if key == b'r':
+    #     start_game(current_level)                                           # Restart level
+    #     return
 
     if game_state != "playing":
         return                                          # Ignore inputs in menus while playing
